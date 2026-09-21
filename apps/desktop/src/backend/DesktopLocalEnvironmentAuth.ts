@@ -138,16 +138,22 @@ export const make = Effect.gen(function* () {
         }).pipe(
           Effect.provideService(HttpClient.HttpClient, httpClient),
           // Retry transient failures (502/503/504, transport-level fetch errors,
-          // timeouts, TypeErrors) for up to ~15s before surfacing the bootstrap
-          // error. A single transient /oauth/token failure no longer hard-crashes
-          // the app; the renderer's cookie path already had this resilience.
-          // spaced(500ms) + upTo(15s) gives ~30 attempts in a 15s window.
+          // timeouts, TypeErrors) before surfacing the bootstrap error. A single
+          // transient /oauth/token failure no longer hard-crashes the app; the
+          // renderer's cookie path already had this resilience. spaced(500ms) +
+          // upTo(15s) gives ~30 attempts in a 15s window.
           Effect.retry({
             while: isTransientBearerBootstrapError,
             schedule: Schedule.spaced(BOOTSTRAP_TRANSIENT_RETRY_INTERVAL).pipe(
               Schedule.upTo({ duration: BOOTSTRAP_TRANSIENT_RETRY_TIMEOUT }),
             ),
           }),
+          // Schedule.upTo only bounds when retries are *scheduled*, not an
+          // in-flight request: an attempt starting near the 15s mark could run
+          // for its own per-request timeout, leaving getBearerToken blocked for
+          // ~20s+. Bound the entire retrying effect so a hung request is
+          // interrupted at the deadline and mapped to the bootstrap error below.
+          Effect.timeout(BOOTSTRAP_TRANSIENT_RETRY_TIMEOUT),
           Effect.mapError(
             (cause) =>
               new DesktopLocalEnvironmentAuthSessionBootstrapError({
