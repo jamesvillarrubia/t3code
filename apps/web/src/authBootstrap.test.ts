@@ -35,6 +35,13 @@ const DESKTOP_AUTH = {
   sessionCookieName: "t3_session",
 } as const;
 
+const REMOTE_AUTH = {
+  policy: "remote-reachable",
+  bootstrapMethods: ["one-time-token"],
+  sessionMethods: ["browser-session-cookie"],
+  sessionCookieName: "t3_session",
+} as const;
+
 const SESSION_EXPIRES_AT = DateTime.makeUnsafe("2026-04-05T00:00:00.000Z");
 const unauthenticatedSession = (auth: AuthSessionState["auth"]): AuthSessionState => ({
   authenticated: false,
@@ -286,8 +293,44 @@ describe("resolveInitialServerAuthGateState", () => {
     // (status 500 for a non-HTTP cause). The important behavior is that the gate
     // resolves to requires-auth instead of rejecting — before the fix this
     // rejection crashed TanStack Router's beforeLoad.
-    await expect(resolveInitialServerAuthGateState()).resolves.toMatchObject({
+    await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
       status: "requires-auth",
+      auth: DESKTOP_AUTH,
+      errorMessage: "Primary environment request failed during fetch-session-state (HTTP 500).",
+    });
+  });
+
+  it("uses loopback-browser fallback metadata when the session fetch fails without a desktop bridge", async () => {
+    const runner: PrimaryHttpEffectRunner = async () => {
+      throw new Error("session fetch failed");
+    };
+    __setPrimaryHttpRunnerForTests(runner);
+    installTestBrowser("http://localhost/");
+
+    const { resolveInitialServerAuthGateState } = await import("./environments/primary");
+
+    await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
+      status: "requires-auth",
+      auth: LOOPBACK_AUTH,
+      errorMessage: "Primary environment request failed during fetch-session-state (HTTP 500).",
+    });
+  });
+
+  it("uses remote-reachable fallback metadata when the session fetch fails on a remote origin", async () => {
+    const runner: PrimaryHttpEffectRunner = async () => {
+      throw new Error("session fetch failed");
+    };
+    __setPrimaryHttpRunnerForTests(runner);
+    vi.stubEnv("VITE_HTTP_URL", "https://remote.example.com");
+    vi.stubEnv("VITE_WS_URL", "wss://remote.example.com");
+    installTestBrowser("https://remote.example.com/");
+
+    const { resolveInitialServerAuthGateState } = await import("./environments/primary");
+
+    await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
+      status: "requires-auth",
+      auth: REMOTE_AUTH,
+      errorMessage: "Primary environment request failed during fetch-session-state (HTTP 500).",
     });
   });
 

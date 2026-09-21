@@ -18,8 +18,10 @@ import {
   stripPairingTokenFromUrl as stripPairingTokenUrl,
 } from "../../pairingUrl";
 
-import { PrimaryEnvironmentHttpClient } from "./httpClient";
 import { runPrimaryHttp } from "../../lib/runtime";
+
+import { PrimaryEnvironmentHttpClient } from "./httpClient";
+import { isLoopbackHostname, readPrimaryEnvironmentTarget } from "./target";
 
 const PrimaryEnvironmentRequestOperation = Schema.Literals([
   "fetch-session-state",
@@ -307,6 +309,48 @@ function isTransientBootstrapError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
+const FALLBACK_SESSION_COOKIE_NAME = "t3_session";
+
+function fallbackAuthDescriptor(): AuthSessionState["auth"] {
+  // The session endpoint is the source of truth for auth metadata. When it is
+  // unreachable we still need a descriptor so PairingRouteSurface can render
+  // the right pairing copy. Desktop has a bridge; browsers do not, so they
+  // must not be sent down the desktop-bootstrap path.
+  if (window.desktopBridge !== undefined) {
+    return {
+      policy: "desktop-managed-local",
+      bootstrapMethods: ["desktop-bootstrap"],
+      sessionMethods: ["browser-session-cookie"],
+      sessionCookieName: FALLBACK_SESSION_COOKIE_NAME,
+    };
+  }
+
+  const hostname = readFallbackAuthHostname();
+  const isRemote = hostname === null || !isLoopbackHostname(hostname);
+  return {
+    policy: isRemote ? "remote-reachable" : "loopback-browser",
+    bootstrapMethods: ["one-time-token"],
+    sessionMethods: ["browser-session-cookie"],
+    sessionCookieName: FALLBACK_SESSION_COOKIE_NAME,
+  };
+}
+
+function readFallbackAuthHostname(): string | null {
+  try {
+    const target = readPrimaryEnvironmentTarget();
+    if (target) {
+      return new URL(target.target.httpBaseUrl).hostname;
+    }
+  } catch {
+    // Fall through to the page origin if the primary target is unreadable.
+  }
+  try {
+    return new URL(window.location.href).hostname;
+  } catch {
+    return null;
+  }
+}
+
 async function bootstrapServerAuth(urlCredential: string | null): Promise<ServerAuthGateState> {
   // The initial session fetch goes through the desktop bearer-token path
   // (withPrimaryBearerToken in httpLayer.ts), which calls the main-process
@@ -320,15 +364,9 @@ async function bootstrapServerAuth(urlCredential: string | null): Promise<Server
   try {
     currentSession = await fetchSessionState();
   } catch (error) {
-    const fallbackAuth: AuthSessionState["auth"] = {
-      policy: "desktop-managed-local",
-      bootstrapMethods: ["desktop-bootstrap"],
-      sessionMethods: ["browser-session-cookie"],
-      sessionCookieName: "t3_session",
-    };
     return {
       status: "requires-auth",
-      auth: fallbackAuth,
+      auth: fallbackAuthDescriptor(),
       errorMessage: error instanceof Error ? error.message : "Authentication failed.",
     };
   }
