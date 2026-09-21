@@ -269,6 +269,28 @@ describe("resolveInitialServerAuthGateState", () => {
     expect(attempts).toBe(4);
   });
 
+  it("degrades to requires-auth instead of crashing beforeLoad when the initial session fetch fails", async () => {
+    // Reproduces the launch crash: the initial fetchSessionState() goes
+    // through the desktop bearer-token path, and a failed bearer bootstrap
+    // surfaced as an uncaught error in beforeLoad. The fix wraps the initial
+    // fetch so a failure degrades to requires-auth with an error message.
+    const runner: PrimaryHttpEffectRunner = async () => {
+      throw new Error("Failed to create the local desktop bearer session.");
+    };
+    __setPrimaryHttpRunnerForTests(runner);
+    installDesktopBootstrap();
+
+    const { resolveInitialServerAuthGateState } = await import("./environments/primary");
+
+    // fetchSessionState wraps the thrown error as a PrimaryEnvironmentRequestError
+    // (status 500 for a non-HTTP cause). The important behavior is that the gate
+    // resolves to requires-auth instead of rejecting — before the fix this
+    // rejection crashed TanStack Router's beforeLoad.
+    await expect(resolveInitialServerAuthGateState()).resolves.toMatchObject({
+      status: "requires-auth",
+    });
+  });
+
   it("takes a pairing token from the location hash and strips it immediately", async () => {
     const testWindow = installTestBrowser("http://localhost/#token=pairing-token");
     const { takePairingTokenFromUrl } = await import("./environments/primary");

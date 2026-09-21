@@ -308,7 +308,30 @@ function isTransientBootstrapError(error: unknown): boolean {
 }
 
 async function bootstrapServerAuth(urlCredential: string | null): Promise<ServerAuthGateState> {
-  const currentSession = await fetchSessionState();
+  // The initial session fetch goes through the desktop bearer-token path
+  // (withPrimaryBearerToken in httpLayer.ts), which calls the main-process
+  // IPC getLocalEnvironmentBearerToken -> DesktopLocalEnvironmentAuth.
+  // A transient failure there (or in the /api/auth/session request itself)
+  // used to escape beforeLoad and render the root error component, crashing
+  // the app on launch. Fall back to requires-auth so the auth gate renders
+  // the pairing UI and the next navigation re-attempts bootstrap, mirroring
+  // how the cookie-exchange path below degrades.
+  let currentSession: AuthSessionState;
+  try {
+    currentSession = await fetchSessionState();
+  } catch (error) {
+    const fallbackAuth: AuthSessionState["auth"] = {
+      policy: "desktop-managed-local",
+      bootstrapMethods: ["desktop-bootstrap"],
+      sessionMethods: ["browser-session-cookie"],
+      sessionCookieName: "t3_session",
+    };
+    return {
+      status: "requires-auth",
+      auth: fallbackAuth,
+      errorMessage: error instanceof Error ? error.message : "Authentication failed.",
+    };
+  }
   if (currentSession.authenticated && !urlCredential) {
     return { status: "authenticated" };
   }
