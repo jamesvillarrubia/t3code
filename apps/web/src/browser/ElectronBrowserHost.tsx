@@ -2,15 +2,18 @@
 
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
 import { FILL_PREVIEW_VIEWPORT } from "@t3tools/contracts";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import { isElectron } from "~/env";
 import { useTheme } from "~/hooks/useTheme";
 import { useActivePreviewSessions } from "~/previewStateStore";
+import { previewEnvironment } from "~/state/preview";
+import { useAtomCommand } from "~/state/use-atom-command";
 
 import { readPreviewAnnotationTheme } from "./annotationTheme";
 import { useBrowserPointerStore } from "./browserPointerStore";
 import { HostedBrowserWebview } from "./HostedBrowserWebview";
+import { openUrlInPreview } from "./openFileInPreview";
 import { previewRuntimeTabId } from "./previewRuntimeTabId";
 
 export function ElectronBrowserHost() {
@@ -78,6 +81,22 @@ export function ElectronBrowserHost() {
       useBrowserPointerStore.getState().apply(event);
     });
   }, []);
+
+  // A `target="_blank"` link inside a hosted page opens as another tab of the
+  // same thread, so the page that held the link stays where it is.
+  const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: true });
+  const threadRefByRuntimeTabId = useRef(new Map<string, (typeof sessions)[number]["threadRef"]>());
+  threadRefByRuntimeTabId.current = new Map(
+    sessions.map(({ runtimeTabId, threadRef }) => [runtimeTabId, threadRef]),
+  );
+  useEffect(() => {
+    const preview = window.desktopBridge?.preview;
+    if (!preview) return;
+    return preview.onOpenLink(({ tabId, url }) => {
+      const threadRef = threadRefByRuntimeTabId.current.get(tabId);
+      if (threadRef) void openUrlInPreview({ threadRef, url, openPreview });
+    });
+  }, [openPreview]);
 
   if (!isElectron) return null;
   return (

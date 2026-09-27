@@ -154,11 +154,17 @@ describe("previewWindowOpenAction", () => {
     ).toBe("popup");
   });
 
-  it("keeps target=_blank links in the preview tab", () => {
+  it("opens target=_blank links as a new tab", () => {
     expect(PreviewManager.previewWindowOpenAction(details({ disposition: "foreground-tab" }))).toBe(
-      "navigate",
+      "new-tab",
     );
     expect(PreviewManager.previewWindowOpenAction(details({ disposition: "background-tab" }))).toBe(
+      "new-tab",
+    );
+  });
+
+  it("keeps other dispositions loading in the preview tab", () => {
+    expect(PreviewManager.previewWindowOpenAction(details({ disposition: "default" }))).toBe(
       "navigate",
     );
   });
@@ -4117,6 +4123,56 @@ describe("PreviewManager", () => {
           });
         }),
       ),
+  );
+
+  effectIt.effect("opens a target=_blank link as a new tab without navigating the opener", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        let openHandler:
+          | ((details: { url: string; disposition: string }) => { action: string })
+          | undefined;
+        const loadURL = vi.fn(async () => undefined);
+        fromId.mockReturnValue({
+          id: 42,
+          hostWebContents: makeTestHostWebContents(),
+          setBackgroundThrottling: vi.fn(),
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "http://localhost:8976/",
+          getTitle: () => "Picker",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          setAudioMuted: vi.fn(),
+          isCurrentlyAudible: () => false,
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setIgnoreMenuShortcuts: vi.fn(),
+          setWindowOpenHandler: vi.fn((handler: typeof openHandler) => {
+            openHandler = handler;
+          }),
+          send: vi.fn(),
+          loadURL,
+        } as never);
+        const opened: Array<{ tabId: string; url: string }> = [];
+        yield* manager.subscribeOpenLinks((event) => Effect.sync(() => void opened.push(event)));
+        yield* manager.createTab("tab_1");
+        yield* manager.registerWebview("tab_1", 42);
+
+        const result = openHandler?.({
+          url: "https://github.com/issues/1",
+          disposition: "foreground-tab",
+        });
+        yield* Effect.yieldNow;
+
+        expect(result).toEqual({ action: "deny" });
+        expect(loadURL).not.toHaveBeenCalled();
+        expect(opened).toEqual([{ tabId: "tab_1", url: "https://github.com/issues/1" }]);
+      }),
+    ),
   );
 
   effectIt.effect("types in background webviews and enables native key input", () =>
