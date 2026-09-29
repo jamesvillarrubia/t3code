@@ -56,6 +56,13 @@ export class DesktopLifecycle extends Context.Service<
       never,
       Scope.Scope | DesktopLifecycleRegistrationServices
     >;
+    /**
+     * Routes `t3code://thread/...` links from `open-url`, `second-instance`, and the
+     * launch argv into the main window. Run before any slow startup work.
+     */
+    readonly registerThreadLinks: (
+      argv: readonly string[],
+    ) => Effect.Effect<void, never, Scope.Scope | DesktopLifecycleRegistrationServices>;
   }
 >()("@t3tools/desktop/app/DesktopLifecycle") {}
 
@@ -243,32 +250,6 @@ export const make = DesktopLifecycle.of({
         }).pipe(Effect.withSpan("desktop.lifecycle.activate")),
       );
     });
-    // `open-url` fires on macOS, possibly before `ready`, so this listener is
-    // registered here and the link waits for the app to be ready.
-    const openThreadLink = (link: ThreadDeepLink) =>
-      void runEffect(
-        electronApp.whenReady.pipe(
-          Effect.andThen(desktopWindow.openThread(link)),
-          Effect.catchCause((cause) => logLifecycleError("failed to open thread link", { cause })),
-          Effect.withSpan("desktop.lifecycle.openThreadLink"),
-        ),
-      );
-    yield* electronApp.on("open-url", (event: Electron.Event, url: string) => {
-      const link = parseThreadDeepLink(url);
-      if (link === null) return;
-      event.preventDefault();
-      openThreadLink(link);
-    });
-    // Windows and Linux hand the URL to a second process, which forwards its argv.
-    yield* electronApp.on("second-instance", (_event: Electron.Event, argv: readonly string[]) => {
-      for (const arg of argv) {
-        const link = parseThreadDeepLink(arg);
-        if (link !== null) {
-          openThreadLink(link);
-          return;
-        }
-      }
-    });
     yield* electronApp.on("window-all-closed", () => {
       void runEffect(
         Effect.gen(function* () {
@@ -290,6 +271,44 @@ export const make = DesktopLifecycle.of({
       });
     }
   }).pipe(Effect.withSpan("desktop.lifecycle.register")),
+  registerThreadLinks: Effect.fn("desktop.lifecycle.registerThreadLinks")(function* (argv) {
+    const desktopWindow = yield* DesktopWindow.DesktopWindow;
+    const electronApp = yield* ElectronApp.ElectronApp;
+    const context = yield* Effect.context<DesktopLifecycleRegistrationServices>();
+    const runEffect = Effect.runPromiseWith(context);
+    // A link can arrive before the rest of startup finishes: macOS `open-url` may fire
+    // before `ready`, and Windows and Linux put the URL in the first process's argv.
+    // The link is queued in DesktopWindow until the main window and renderer exist.
+    const openThreadLink = (link: ThreadDeepLink) =>
+      void runEffect(
+        electronApp.whenReady.pipe(
+          Effect.andThen(desktopWindow.openThread(link)),
+          Effect.catchCause((cause) => logLifecycleError("failed to open thread link", { cause })),
+          Effect.withSpan("desktop.lifecycle.openThreadLink"),
+        ),
+      );
+    const openFirstThreadLink = (args: readonly string[]) => {
+      for (const arg of args) {
+        const link = parseThreadDeepLink(arg);
+        if (link !== null) {
+          openThreadLink(link);
+          return;
+        }
+      }
+    };
+    yield* electronApp.on("open-url", (event: Electron.Event, url: string) => {
+      const link = parseThreadDeepLink(url);
+      if (link === null) return;
+      event.preventDefault();
+      openThreadLink(link);
+    });
+    // Windows and Linux hand the URL to a second process, which forwards its argv.
+    yield* electronApp.on(
+      "second-instance",
+      (_event: Electron.Event, secondArgv: readonly string[]) => openFirstThreadLink(secondArgv),
+    );
+    openFirstThreadLink(argv);
+  }),
 });
 
 export const layer = Layer.succeed(DesktopLifecycle, make);

@@ -125,10 +125,16 @@ export class DesktopWindow extends Context.Service<
     ) => Effect.Effect<void, DesktopWindowError>;
     /**
      * Opens a thread from a `t3code://thread/...` link. The link waits until the
-     * main window exists (cold launch, or the backend is still starting), then
-     * goes to the renderer as an `open-thread:` menu action and reveals the window.
+     * main window exists (cold launch, or the backend is still starting) and its
+     * renderer has called `takePendingThreadLink`, then goes to the renderer as an
+     * `open-thread:` menu action and reveals the window.
      */
     readonly openThread: (link: ThreadDeepLink) => Effect.Effect<void, DesktopWindowError>;
+    /**
+     * Called by the renderer once it listens for menu actions. Returns a link that
+     * arrived earlier and marks the renderer as listening, so later links are pushed.
+     */
+    readonly takePendingThreadLink: Effect.Effect<Option.Option<ThreadDeepLink>>;
     /**
      * Push a capture lifecycle event to the renderer. Only `started` reveals the
      * window; the rest must not interrupt the app the user has switched to.
@@ -335,8 +341,10 @@ export const make = Effect.gen(function* () {
   // createMainIfBackendReady, which gates the post-readiness window
   // open in development and the macOS "activate without windows" path.
   const backendReadyRef = yield* Ref.make(false);
-  // A thread link that arrived while no main window existed. `createMain` sends it.
+  // A thread link that arrived before the main window's renderer listened for it.
   const pendingThreadLinkRef = yield* Ref.make<Option.Option<ThreadDeepLink>>(Option.none());
+  // True once the current main window's renderer has called `takePendingThreadLink`.
+  const threadLinkRendererListeningRef = yield* Ref.make(false);
   // The transient "Connecting to WSL" splash window, tracked separately so it
   // is never mistaken for the real main window.
   const splashWindowRef = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
@@ -874,10 +882,11 @@ export const make = Effect.gen(function* () {
       yield* dispatch;
     });
 
-  // Sends a thread link that arrived while no main window existed. Takes the window
-  // from `createMain` directly because looking it up would call `createMain` again.
+  // Pushes a queued thread link once the renderer listens. Before that the renderer
+  // pulls it, because a menu action sent earlier would have no listener yet.
   const flushPendingThreadLink = (window: Electron.BrowserWindow) =>
     Effect.gen(function* () {
+      if (!(yield* Ref.get(threadLinkRendererListeningRef))) return;
       const pending = yield* Ref.getAndSet(pendingThreadLinkRef, Option.none());
       if (Option.isNone(pending)) return;
       yield* sendToWindow(window, MENU_ACTION_CHANNEL, formatOpenThreadAction(pending.value), true);
@@ -886,8 +895,8 @@ export const make = Effect.gen(function* () {
   const createMain = Effect.gen(function* () {
     const window = yield* createWindow();
     yield* electronWindow.setMain(window);
+    yield* Ref.set(threadLinkRendererListeningRef, false);
     yield* logWindowInfo("main window created");
-    yield* flushPendingThreadLink(window);
     return window;
   }).pipe(Effect.withSpan("desktop.window.createMain"));
 
@@ -1033,6 +1042,9 @@ export const make = Effect.gen(function* () {
       }
       yield* createMainIfBackendReady;
     }),
+    takePendingThreadLink: Ref.set(threadLinkRendererListeningRef, true).pipe(
+      Effect.andThen(Ref.getAndSet(pendingThreadLinkRef, Option.none())),
+    ),
     dispatchSnapShotEvent: Effect.fn("desktop.window.dispatchSnapShotEvent")(function* (event) {
       yield* Effect.annotateCurrentSpan({
         event: event.type,

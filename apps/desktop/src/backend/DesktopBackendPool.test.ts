@@ -98,6 +98,7 @@ function makePoolLayer(
           prepareCaptureReveal: Effect.void,
           dispatchMenuAction: () => Effect.die("unexpected menu action"),
           openThread: () => Effect.void,
+          takePendingThreadLink: Effect.succeedNone,
           dispatchSnapShotEvent: () => Effect.void,
           zoomMain: () => Effect.die("unexpected zoom"),
           syncAppearance: Effect.void,

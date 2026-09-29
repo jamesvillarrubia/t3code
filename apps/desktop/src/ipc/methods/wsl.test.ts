@@ -47,6 +47,7 @@ function makeLifecycleLayer(relaunchReasons: Array<string>) {
           relaunchReasons.push(reason);
         }),
       register: Effect.void,
+      registerThreadLinks: () => Effect.void,
     }),
   );
 }

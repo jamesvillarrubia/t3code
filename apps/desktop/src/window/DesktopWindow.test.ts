@@ -665,7 +665,7 @@ describe("DesktopWindow", () => {
       }),
   );
 
-  it.effect("queues a thread link until the main window exists, then sends it once", () =>
+  it.effect("holds a thread link for the renderer to take after it subscribes", () =>
     Effect.gen(function* () {
       const fakeWindow = makeFakeBrowserWindow();
       const send = vi.spyOn(fakeWindow.window.webContents, "send");
@@ -680,20 +680,20 @@ describe("DesktopWindow", () => {
         const desktopWindow = yield* DesktopWindow.DesktopWindow;
         yield* desktopWindow.openThread(link);
         assert.equal(yield* Ref.get(createCount), 0);
-        assert.deepEqual(menuActions(), []);
 
         yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
         assert.equal(yield* Ref.get(createCount), 1);
-        assert.deepEqual(menuActions(), ["open-thread:env-1/thread-1"]);
+        // The renderer has no listener yet, so nothing is pushed.
+        assert.deepEqual(menuActions(), []);
 
-        yield* Ref.set(mainWindow, Option.none());
-        yield* desktopWindow.activate;
-        assert.deepEqual(menuActions(), ["open-thread:env-1/thread-1"]);
+        assert.deepEqual(yield* desktopWindow.takePendingThreadLink, Option.some(link));
+        assert.deepEqual(yield* desktopWindow.takePendingThreadLink, Option.none());
+        assert.deepEqual(menuActions(), []);
       }).pipe(Effect.provide(layer));
     }),
   );
 
-  it.effect("sends a thread link straight to an existing main window", () =>
+  it.effect("pushes a thread link to a main window whose renderer already subscribed", () =>
     Effect.gen(function* () {
       const fakeWindow = makeFakeBrowserWindow();
       const send = vi.spyOn(fakeWindow.window.webContents, "send");
@@ -704,12 +704,14 @@ describe("DesktopWindow", () => {
       yield* Effect.gen(function* () {
         const desktopWindow = yield* DesktopWindow.DesktopWindow;
         yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+        assert.deepEqual(yield* desktopWindow.takePendingThreadLink, Option.none());
         yield* desktopWindow.openThread({ environmentId: "env-2", threadId: "thread-2" });
         assert.equal(yield* Ref.get(createCount), 1);
         assert.deepEqual(
           send.mock.calls.filter(([channel]) => channel === MENU_ACTION_CHANNEL),
           [[MENU_ACTION_CHANNEL, "open-thread:env-2/thread-2"]],
         );
+        assert.deepEqual(yield* desktopWindow.takePendingThreadLink, Option.none());
       }).pipe(Effect.provide(layer));
     }),
   );

@@ -1146,6 +1146,11 @@ export interface DesktopBridge {
   getLocalEnvironmentBearerToken: () => Promise<string>;
   getClientSettings: () => Promise<ClientSettings | null>;
   setClientSettings: (settings: ClientSettings) => Promise<void>;
+  /**
+   * Returns a `t3code://thread/...` link that arrived before the renderer listened,
+   * and tells the desktop shell to push later links through `onMenuAction`.
+   */
+  takePendingThreadLink: () => Promise<{ environmentId: string; threadId: string } | null>;
   getConnectionCatalog?: () => Promise<string | null>;
   setConnectionCatalog?: (catalog: string) => Promise<boolean>;
   clearConnectionCatalog?: () => Promise<void>;

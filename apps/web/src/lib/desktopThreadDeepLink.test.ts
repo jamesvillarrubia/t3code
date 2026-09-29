@@ -13,7 +13,8 @@ describe("desktop thread deep links", () => {
           menuAction = undefined;
         };
       },
-    } satisfies Pick<DesktopBridge, "onMenuAction">;
+      takePendingThreadLink: () => Promise.resolve(null),
+    } satisfies Pick<DesktopBridge, "onMenuAction" | "takePendingThreadLink">;
     const openThread = vi.fn();
     const uninstall = installDesktopThreadDeepLinks(bridge, openThread);
 
@@ -29,6 +30,28 @@ describe("desktop thread deep links", () => {
 
     uninstall?.();
     expect(menuAction).toBeUndefined();
+  });
+
+  it("opens a link that arrived before the listener existed, after subscribing", async () => {
+    const order: string[] = [];
+    const link = { environmentId: "env-1", threadId: "thread-1" };
+    const bridge = {
+      onMenuAction: () => {
+        order.push("subscribe");
+        return () => undefined;
+      },
+      takePendingThreadLink: () => {
+        order.push("take");
+        return Promise.resolve(link);
+      },
+    } satisfies Pick<DesktopBridge, "onMenuAction" | "takePendingThreadLink">;
+    const openThread = vi.fn();
+
+    installDesktopThreadDeepLinks(bridge, openThread);
+    await Promise.resolve();
+
+    expect(order).toEqual(["subscribe", "take"]);
+    expect(openThread).toHaveBeenCalledExactlyOnceWith(link);
   });
 
   it("does nothing without a desktop bridge", () => {

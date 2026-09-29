@@ -96,6 +96,7 @@ function makeDesktopWindowLayer(
     prepareCaptureReveal: Effect.void,
     dispatchMenuAction: () => Effect.void,
     openThread: input.openThread ?? (() => Effect.void),
+    takePendingThreadLink: Effect.succeedNone,
     dispatchSnapShotEvent: () => Effect.void,
     zoomMain: () => Effect.void,
     syncAppearance: Effect.void,
@@ -139,7 +140,7 @@ describe("DesktopLifecycle", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const { appListeners, opened, layer, lifecycle } = yield* registerWithOpenedThreads;
-          yield* lifecycle.register.pipe(Effect.provide(layer));
+          yield* lifecycle.registerThreadLinks([]).pipe(Effect.provide(layer));
           let prevented = false;
           const event = {
             preventDefault: () => {
@@ -160,7 +161,7 @@ describe("DesktopLifecycle", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const { appListeners, opened, layer, lifecycle } = yield* registerWithOpenedThreads;
-          yield* lifecycle.register.pipe(Effect.provide(layer));
+          yield* lifecycle.registerThreadLinks([]).pipe(Effect.provide(layer));
           let prevented = false;
           const event = {
             preventDefault: () => {
@@ -178,11 +179,25 @@ describe("DesktopLifecycle", () => {
       ),
     );
 
+    it.effect("opens the link found in the launch argv", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { opened, layer, lifecycle } = yield* registerWithOpenedThreads;
+          yield* lifecycle
+            .registerThreadLinks(["T3 Code.exe", `t3code://thread/${ENV}/${THREAD}`])
+            .pipe(Effect.provide(layer));
+          yield* Effect.yieldNow;
+
+          assert.deepEqual(opened, [{ environmentId: ENV, threadId: THREAD }]);
+        }),
+      ),
+    );
+
     it.effect("second-instance opens the link found in argv", () =>
       Effect.scoped(
         Effect.gen(function* () {
           const { appListeners, opened, layer, lifecycle } = yield* registerWithOpenedThreads;
-          yield* lifecycle.register.pipe(Effect.provide(layer));
+          yield* lifecycle.registerThreadLinks([]).pipe(Effect.provide(layer));
 
           appListeners.get("second-instance")?.({}, [
             "/Applications/T3 Code.exe",

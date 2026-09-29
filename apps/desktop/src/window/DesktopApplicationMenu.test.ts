@@ -85,6 +85,7 @@ const makeDesktopWindowLayer = (selectedAction: Deferred.Deferred<string>) =>
     prepareCaptureReveal: Effect.void,
     dispatchMenuAction: (action) => Deferred.succeed(selectedAction, action).pipe(Effect.asVoid),
     openThread: () => Effect.void,
+    takePendingThreadLink: Effect.succeedNone,
     dispatchSnapShotEvent: () => Effect.void,
     zoomMain: (direction) =>
       Deferred.succeed(selectedAction, `zoom-${direction}`).pipe(Effect.asVoid),
