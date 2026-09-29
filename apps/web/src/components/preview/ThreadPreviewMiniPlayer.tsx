@@ -1,7 +1,7 @@
 "use client";
 
 import { FILL_PREVIEW_VIEWPORT, type ScopedThreadRef } from "@t3tools/contracts";
-import { PanelRightIcon, PictureInPicture2, XIcon } from "lucide-react";
+import { ExternalLink, PanelRightIcon, PictureInPicture2, XIcon } from "lucide-react";
 import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -31,6 +31,7 @@ import {
   previewMiniPlayerSourceKey,
   usePreviewMiniPlayerStore,
 } from "~/previewMiniPlayerStore";
+import { readLocalApi } from "~/localApi";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { useDeviceState } from "~/state/device";
 
@@ -190,6 +191,19 @@ function BrowserMiniPlayer({
 
   if (!snapshot) return null;
 
+  const url = snapshot.navStatus._tag === "Idle" ? "" : snapshot.navStatus.url;
+  const openInSystemBrowser = () => {
+    void readLocalApi()
+      ?.shell.openExternal(url)
+      .catch((error) => {
+        toastManager.add({
+          type: "error",
+          title: "Unable to open in system browser",
+          description: error instanceof Error ? error.message : "An error occurred.",
+        });
+      });
+  };
+
   return (
     <MiniPlayerShell
       threadRef={threadRef}
@@ -200,31 +214,50 @@ function BrowserMiniPlayer({
       recording={recording}
       onOpenInPanel={openInPanel}
       pillActions={
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                variant={desktopOverlay?.pictureInPicture ? "secondary" : "ghost"}
-                size="icon-xs"
-                aria-label={
-                  desktopOverlay?.pictureInPicture
-                    ? "Close popped-out preview"
-                    : "Pop preview into separate window"
-                }
-                disabled={!desktopOverlay?.hasWebContents}
-                onPointerDown={(event) => event.stopPropagation()}
-                onClick={toggleNativePictureInPicture}
-              />
-            }
-          >
-            <PictureInPicture2 />
-          </TooltipTrigger>
-          <TooltipPopup side="top">
-            {desktopOverlay?.pictureInPicture
-              ? "Close separate window"
-              : "Pop into separate window"}
-          </TooltipPopup>
-        </Tooltip>
+        <>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label="Open preview in system browser"
+                  disabled={url === ""}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={openInSystemBrowser}
+                />
+              }
+            >
+              <ExternalLink />
+            </TooltipTrigger>
+            <TooltipPopup side="top">Open in system browser</TooltipPopup>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant={desktopOverlay?.pictureInPicture ? "secondary" : "ghost"}
+                  size="icon-xs"
+                  aria-label={
+                    desktopOverlay?.pictureInPicture
+                      ? "Close popped-out preview"
+                      : "Pop preview into separate window"
+                  }
+                  disabled={!desktopOverlay?.hasWebContents}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={toggleNativePictureInPicture}
+                />
+              }
+            >
+              <PictureInPicture2 />
+            </TooltipTrigger>
+            <TooltipPopup side="top">
+              {desktopOverlay?.pictureInPicture
+                ? "Close separate window"
+                : "Pop into separate window"}
+            </TooltipPopup>
+          </Tooltip>
+        </>
       }
     >
       {(frame) => (
