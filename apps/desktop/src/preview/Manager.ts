@@ -558,15 +558,18 @@ const POPUP_WINDOW_OPTIONS = {
  *
  * `"new-tab"` hands a `target="_blank"` link (a tab disposition) to the web
  * app, which opens it as another preview tab so the page that held the link
- * stays put. Schemes a popup cannot be hardened for keep loading in place.
+ * stays put. Schemes a popup cannot be hardened for keep loading in place, and
+ * so does a form POST with a body, which a new tab could only reopen as a GET.
  */
 export const previewWindowOpenAction = (details: {
   readonly url: string;
   readonly disposition: Electron.HandlerDetails["disposition"];
+  readonly postBody?: Electron.PostBody;
 }): "popup" | "new-tab" | "navigate" => {
   if (!isPopupUrl(details.url)) return "navigate";
   if (details.disposition === "new-window") return "popup";
-  return details.disposition === "foreground-tab" || details.disposition === "background-tab"
+  return !details.postBody &&
+    (details.disposition === "foreground-tab" || details.disposition === "background-tab")
     ? "new-tab"
     : "navigate";
 };
@@ -2068,7 +2071,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             return { action: "allow", overrideBrowserWindowOptions: POPUP_WINDOW_OPTIONS };
           }
           if (action === "new-tab") {
-            runFork(emitOpenLink({ tabId, url: details.url }));
+            runFork(
+              emitOpenLink({
+                tabId,
+                url: details.url,
+                background: details.disposition === "background-tab",
+              }),
+            );
             return { action: "deny" };
           }
           runFork(

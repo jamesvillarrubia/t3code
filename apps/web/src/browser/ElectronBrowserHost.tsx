@@ -85,16 +85,25 @@ export function ElectronBrowserHost() {
   // A `target="_blank"` link inside a hosted page opens as another tab of the
   // same thread, so the page that held the link stays where it is.
   const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: true });
-  const threadRefByRuntimeTabId = useRef(new Map<string, (typeof sessions)[number]["threadRef"]>());
-  threadRefByRuntimeTabId.current = new Map(
-    sessions.map(({ runtimeTabId, threadRef }) => [runtimeTabId, threadRef]),
+  const sessionByRuntimeTabId = useRef(new Map<string, (typeof sessions)[number]>());
+  sessionByRuntimeTabId.current = new Map(
+    sessions.map((session) => [session.runtimeTabId, session]),
   );
   useEffect(() => {
     const preview = window.desktopBridge?.preview;
     if (!preview) return;
-    return preview.onOpenLink(({ tabId, url }) => {
-      const threadRef = threadRefByRuntimeTabId.current.get(tabId);
-      if (threadRef) void openUrlInPreview({ threadRef, url, openPreview });
+    return preview.onOpenLink(({ tabId, url, background }) => {
+      const source = sessionByRuntimeTabId.current.get(tabId);
+      // The new tab keeps the source tab's profile so its cookies carry over.
+      if (source) {
+        void openUrlInPreview({
+          threadRef: source.threadRef,
+          url,
+          openPreview,
+          profileId: source.snapshot.profileId,
+          background,
+        });
+      }
     });
   }, [openPreview]);
 

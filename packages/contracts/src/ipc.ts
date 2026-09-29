@@ -666,6 +666,8 @@ export interface DesktopPreviewPointerEvent {
 export interface DesktopPreviewOpenLinkEvent {
   tabId: string;
   url: string;
+  /** True for middle-click / Cmd-click, which should not take focus. */
+  background: boolean;
 }
 
 /** Recording decorations are forwarded separately from the captured page pixels. */

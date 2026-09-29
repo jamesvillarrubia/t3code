@@ -139,6 +139,7 @@ describe("previewWindowOpenAction", () => {
   const details = (overrides: {
     readonly url?: string;
     readonly disposition?: Electron.HandlerDetails["disposition"];
+    readonly postBody?: Electron.PostBody;
   }) => ({
     url: "https://accounts.google.com/o/oauth2/auth",
     disposition: "new-window" as Electron.HandlerDetails["disposition"],
@@ -161,6 +162,14 @@ describe("previewWindowOpenAction", () => {
     expect(PreviewManager.previewWindowOpenAction(details({ disposition: "background-tab" }))).toBe(
       "new-tab",
     );
+  });
+
+  it("keeps a form POST with a body on the in-place path", () => {
+    // A new tab can only reopen the URL as a GET, which would drop the body.
+    const postBody = { data: [], contentType: "application/x-www-form-urlencoded" };
+    expect(
+      PreviewManager.previewWindowOpenAction(details({ disposition: "foreground-tab", postBody })),
+    ).toBe("navigate");
   });
 
   it("keeps other dispositions loading in the preview tab", () => {
@@ -4157,7 +4166,7 @@ describe("PreviewManager", () => {
           send: vi.fn(),
           loadURL,
         } as never);
-        const opened: Array<{ tabId: string; url: string }> = [];
+        const opened: Array<{ tabId: string; url: string; background: boolean }> = [];
         yield* manager.subscribeOpenLinks((event) => Effect.sync(() => void opened.push(event)));
         yield* manager.createTab("tab_1");
         yield* manager.registerWebview("tab_1", 42);
@@ -4170,7 +4179,17 @@ describe("PreviewManager", () => {
 
         expect(result).toEqual({ action: "deny" });
         expect(loadURL).not.toHaveBeenCalled();
-        expect(opened).toEqual([{ tabId: "tab_1", url: "https://github.com/issues/1" }]);
+        expect(opened).toEqual([
+          { tabId: "tab_1", url: "https://github.com/issues/1", background: false },
+        ]);
+
+        openHandler?.({ url: "https://github.com/issues/2", disposition: "background-tab" });
+        yield* Effect.yieldNow;
+        expect(opened[1]).toEqual({
+          tabId: "tab_1",
+          url: "https://github.com/issues/2",
+          background: true,
+        });
       }),
     ),
   );
