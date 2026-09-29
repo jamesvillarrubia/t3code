@@ -665,6 +665,55 @@ describe("DesktopWindow", () => {
       }),
   );
 
+  it.effect("queues a thread link until the main window exists, then sends it once", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const send = vi.spyOn(fakeWindow.window.webContents, "send");
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const layer = makeTestLayer({ window: fakeWindow.window, createCount, mainWindow });
+      const link = { environmentId: "env-1", threadId: "thread-1" };
+      const menuActions = () =>
+        send.mock.calls.filter(([channel]) => channel === MENU_ACTION_CHANNEL).map(([, a]) => a);
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.openThread(link);
+        assert.equal(yield* Ref.get(createCount), 0);
+        assert.deepEqual(menuActions(), []);
+
+        yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+        assert.equal(yield* Ref.get(createCount), 1);
+        assert.deepEqual(menuActions(), ["open-thread:env-1/thread-1"]);
+
+        yield* Ref.set(mainWindow, Option.none());
+        yield* desktopWindow.activate;
+        assert.deepEqual(menuActions(), ["open-thread:env-1/thread-1"]);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("sends a thread link straight to an existing main window", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const send = vi.spyOn(fakeWindow.window.webContents, "send");
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const layer = makeTestLayer({ window: fakeWindow.window, createCount, mainWindow });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+        yield* desktopWindow.openThread({ environmentId: "env-2", threadId: "thread-2" });
+        assert.equal(yield* Ref.get(createCount), 1);
+        assert.deepEqual(
+          send.mock.calls.filter(([channel]) => channel === MENU_ACTION_CHANNEL),
+          [[MENU_ACTION_CHANNEL, "open-thread:env-2/thread-2"]],
+        );
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
   it.effect("blocks only repeated Cmd+W input before it reaches the native window menu", () =>
     Effect.gen(function* () {
       const fakeWindow = makeFakeBrowserWindow();

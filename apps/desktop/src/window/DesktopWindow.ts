@@ -9,6 +9,7 @@ import * as Ref from "effect/Ref";
 import * as Electron from "electron";
 
 import { type DesktopSnapShotEvent, DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts";
+import { formatOpenThreadAction, type ThreadDeepLink } from "@t3tools/shared/threadDeepLink";
 
 import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
@@ -122,6 +123,12 @@ export class DesktopWindow extends Context.Service<
       action: string,
       options?: { readonly reveal?: boolean },
     ) => Effect.Effect<void, DesktopWindowError>;
+    /**
+     * Opens a thread from a `t3code://thread/...` link. The link waits until the
+     * main window exists (cold launch, or the backend is still starting), then
+     * goes to the renderer as an `open-thread:` menu action and reveals the window.
+     */
+    readonly openThread: (link: ThreadDeepLink) => Effect.Effect<void, DesktopWindowError>;
     /**
      * Push a capture lifecycle event to the renderer. Only `started` reveals the
      * window; the rest must not interrupt the app the user has switched to.
@@ -328,6 +335,8 @@ export const make = Effect.gen(function* () {
   // createMainIfBackendReady, which gates the post-readiness window
   // open in development and the macOS "activate without windows" path.
   const backendReadyRef = yield* Ref.make(false);
+  // A thread link that arrived while no main window existed. `createMain` sends it.
+  const pendingThreadLinkRef = yield* Ref.make<Option.Option<ThreadDeepLink>>(Option.none());
   // The transient "Connecting to WSL" splash window, tracked separately so it
   // is never mistaken for the real main window.
   const splashWindowRef = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
@@ -842,10 +851,43 @@ export const make = Effect.gen(function* () {
     return window;
   });
 
+  const sendToWindow = (
+    targetWindow: Electron.BrowserWindow,
+    channel: string,
+    payload: unknown,
+    reveal: boolean,
+  ) =>
+    Effect.gen(function* () {
+      if (targetWindow.isDestroyed()) return;
+      const send = Effect.sync(() => {
+        if (!targetWindow.isDestroyed()) targetWindow.webContents.send(channel, payload);
+      });
+      // The renderer must learn about the event even when another process refuses to
+      // yield the foreground, so send first and treat the reveal as best effort.
+      const dispatch = reveal
+        ? send.pipe(Effect.andThen(electronWindow.reveal(targetWindow).pipe(Effect.ignoreCause)))
+        : send;
+      if (targetWindow.webContents.isLoadingMainFrame()) {
+        targetWindow.webContents.once("did-finish-load", () => void runPromise(dispatch));
+        return;
+      }
+      yield* dispatch;
+    });
+
+  // Sends a thread link that arrived while no main window existed. Takes the window
+  // from `createMain` directly because looking it up would call `createMain` again.
+  const flushPendingThreadLink = (window: Electron.BrowserWindow) =>
+    Effect.gen(function* () {
+      const pending = yield* Ref.getAndSet(pendingThreadLinkRef, Option.none());
+      if (Option.isNone(pending)) return;
+      yield* sendToWindow(window, MENU_ACTION_CHANNEL, formatOpenThreadAction(pending.value), true);
+    });
+
   const createMain = Effect.gen(function* () {
     const window = yield* createWindow();
     yield* electronWindow.setMain(window);
     yield* logWindowInfo("main window created");
+    yield* flushPendingThreadLink(window);
     return window;
   }).pipe(Effect.withSpan("desktop.window.createMain"));
 
@@ -931,20 +973,7 @@ export const make = Effect.gen(function* () {
     const existingWindow = yield* reveal ? focusedMainWindow : electronWindow.main;
     if (Option.isNone(existingWindow) && (!reveal || (yield* waitingForBackend))) return;
     const targetWindow = Option.isSome(existingWindow) ? existingWindow.value : yield* ensureMain;
-    if (targetWindow.isDestroyed()) return;
-    const send = Effect.sync(() => {
-      if (!targetWindow.isDestroyed()) targetWindow.webContents.send(channel, payload);
-    });
-    // The renderer must learn about the event even when another process refuses to
-    // yield the foreground, so send first and treat the reveal as best effort.
-    const dispatch = reveal
-      ? send.pipe(Effect.andThen(electronWindow.reveal(targetWindow).pipe(Effect.ignoreCause)))
-      : send;
-    if (targetWindow.webContents.isLoadingMainFrame()) {
-      targetWindow.webContents.once("did-finish-load", () => void runPromise(dispatch));
-      return;
-    }
-    yield* dispatch;
+    yield* sendToWindow(targetWindow, channel, payload, reveal);
   });
 
   return DesktopWindow.of({
@@ -994,6 +1023,15 @@ export const make = Effect.gen(function* () {
     dispatchMenuAction: Effect.fn("desktop.window.dispatchMenuAction")(function* (action, options) {
       yield* Effect.annotateCurrentSpan({ action });
       yield* dispatchRendererEvent(MENU_ACTION_CHANNEL, action, options);
+    }),
+    openThread: Effect.fn("desktop.window.openThread")(function* (link) {
+      yield* Ref.set(pendingThreadLinkRef, Option.some(link));
+      const existingWindow = yield* currentMainWindow;
+      if (Option.isSome(existingWindow)) {
+        yield* flushPendingThreadLink(existingWindow.value);
+        return;
+      }
+      yield* createMainIfBackendReady;
     }),
     dispatchSnapShotEvent: Effect.fn("desktop.window.dispatchSnapShotEvent")(function* (event) {
       yield* Effect.annotateCurrentSpan({

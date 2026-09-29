@@ -80,6 +80,7 @@ function makeDesktopWindowLayer(
   input: {
     readonly activate?: Effect.Effect<void>;
     readonly flushMainWindowBounds?: Effect.Effect<void>;
+    readonly openThread?: DesktopWindow.DesktopWindow["Service"]["openThread"];
   } = {},
 ) {
   return Layer.succeed(DesktopWindow.DesktopWindow, {
@@ -94,6 +95,7 @@ function makeDesktopWindowLayer(
     flushMainWindowBounds: input.flushMainWindowBounds ?? Effect.void,
     prepareCaptureReveal: Effect.void,
     dispatchMenuAction: () => Effect.void,
+    openThread: input.openThread ?? (() => Effect.void),
     dispatchSnapShotEvent: () => Effect.void,
     zoomMain: () => Effect.void,
     syncAppearance: Effect.void,
@@ -101,6 +103,100 @@ function makeDesktopWindowLayer(
 }
 
 describe("DesktopLifecycle", () => {
+  describe("thread deep links", () => {
+    const ENV = "3f2b8c1e-5a4d-4c0e-9d7a-1b2c3d4e5f60";
+    const THREAD = "9a8b7c6d-1e2f-4a3b-8c5d-6e7f80912345";
+
+    const registerWithOpenedThreads = Effect.gen(function* () {
+      const appListeners = new Map<string, (...args: readonly unknown[]) => void>();
+      const opened: Array<{ environmentId: string; threadId: string }> = [];
+      const layer = DesktopLifecycle.layer.pipe(
+        Layer.provideMerge(makeElectronAppLayer(appListeners)),
+        Layer.provideMerge(electronThemeLayer),
+        Layer.provideMerge(makeElectronWindowLayer()),
+        Layer.provideMerge(
+          makeDesktopWindowLayer({
+            openThread: (link) =>
+              Effect.sync(() => {
+                opened.push(link);
+              }),
+          }),
+        ),
+        Layer.provideMerge(
+          Layer.succeed(DesktopEnvironment.DesktopEnvironment, {
+            platform: "darwin",
+            isDevelopment: false,
+          } as DesktopEnvironment.DesktopEnvironment["Service"]),
+        ),
+        Layer.provideMerge(DesktopShutdown.layer),
+        Layer.provideMerge(DesktopState.layer),
+      );
+      const lifecycle = yield* Effect.provide(DesktopLifecycle.DesktopLifecycle, layer);
+      return { appListeners, opened, layer, lifecycle };
+    });
+
+    it.effect("open-url opens a t3code://thread link and claims the event", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { appListeners, opened, layer, lifecycle } = yield* registerWithOpenedThreads;
+          yield* lifecycle.register.pipe(Effect.provide(layer));
+          let prevented = false;
+          const event = {
+            preventDefault: () => {
+              prevented = true;
+            },
+          } as Electron.Event;
+
+          appListeners.get("open-url")?.(event, `t3code://thread/${ENV}/${THREAD}`);
+          yield* Effect.yieldNow;
+
+          assert.isTrue(prevented);
+          assert.deepEqual(opened, [{ environmentId: ENV, threadId: THREAD }]);
+        }),
+      ),
+    );
+
+    it.effect("open-url leaves other URLs alone", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { appListeners, opened, layer, lifecycle } = yield* registerWithOpenedThreads;
+          yield* lifecycle.register.pipe(Effect.provide(layer));
+          let prevented = false;
+          const event = {
+            preventDefault: () => {
+              prevented = true;
+            },
+          } as Electron.Event;
+
+          appListeners.get("open-url")?.(event, `t3code://app/${ENV}/${THREAD}`);
+          appListeners.get("open-url")?.(event, "t3code://thread/../etc");
+          yield* Effect.yieldNow;
+
+          assert.isFalse(prevented);
+          assert.deepEqual(opened, []);
+        }),
+      ),
+    );
+
+    it.effect("second-instance opens the link found in argv", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { appListeners, opened, layer, lifecycle } = yield* registerWithOpenedThreads;
+          yield* lifecycle.register.pipe(Effect.provide(layer));
+
+          appListeners.get("second-instance")?.({}, [
+            "/Applications/T3 Code.exe",
+            "--flag",
+            `t3code://thread/${ENV}/${THREAD}`,
+          ]);
+          appListeners.get("second-instance")?.({}, ["/Applications/T3 Code.exe"]);
+          yield* Effect.yieldNow;
+
+          assert.deepEqual(opened, [{ environmentId: ENV, threadId: THREAD }]);
+        }),
+      ),
+    );
+  });
   for (const platform of ["darwin", "win32", "linux"] satisfies ReadonlyArray<NodeJS.Platform>) {
     it.effect(`lets the updater's quit event proceed on ${platform}`, () => {
       const appListeners = new Map<string, (...args: readonly unknown[]) => void>();

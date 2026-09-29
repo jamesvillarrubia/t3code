@@ -78,6 +78,7 @@ import {
 
 import { getDesktopSnapShotBridge } from "../lib/desktopSnapShot";
 import { installDesktopPasteAsText } from "../lib/desktopPasteAsText";
+import { installDesktopThreadDeepLinks } from "../lib/desktopThreadDeepLink";
 import { shouldResumeSnapShotSetupOnStartup } from "../lib/snapShotSetupResume";
 
 export const Route = createRootRoute({
@@ -136,6 +137,14 @@ function RootRouteNotFoundView() {
 
 function RootRouteView() {
   useEffect(() => installDesktopPasteAsText(window.desktopBridge, window), []);
+  const navigate = useNavigate();
+  useEffect(
+    () =>
+      installDesktopThreadDeepLinks(window.desktopBridge, (params) => {
+        void navigate({ to: "/$environmentId/$threadId", params });
+      }),
+    [navigate],
+  );
   const pathname = useLocation({ select: (location) => location.pathname });
   const { authGateState } = Route.useRouteContext();
   const primaryEnvironmentAuthenticated = authGateState.status === "authenticated";
