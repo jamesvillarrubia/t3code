@@ -91,7 +91,7 @@ describe("DesktopLocalEnvironmentAuth", () => {
     () =>
       Effect.gen(function* () {
         const presented = yield* Ref.make<string | null>(null);
-        const layerHttpClient = Layer.succeed(
+        const httpClientLayer = Layer.succeed(
           HttpClient.HttpClient,
           HttpClient.make((request) => {
             const body =
@@ -136,7 +136,7 @@ describe("DesktopLocalEnvironmentAuth", () => {
         }).pipe(
           Effect.provide(
             DesktopLocalEnvironmentAuth.layer.pipe(
-              Layer.provide(Layer.mergeAll(poolLayer, layerHttpClient)),
+              Layer.provide(Layer.mergeAll(poolLayer, httpClientLayer)),
             ),
           ),
         );
@@ -148,70 +148,90 @@ describe("DesktopLocalEnvironmentAuth", () => {
       }).pipe(Effect.provide(TestClock.layer())),
   );
 
-  it.effect("retries transient /oauth/token failures before surfacing the bootstrap error", () =>
+  const tokenResponse = (request: HttpClientRequest.HttpClientRequest) =>
+    HttpClientResponse.fromWeb(
+      request,
+      new Response(
+        JSON.stringify({
+          access_token: "desktop-bearer-token",
+          issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+          token_type: "Bearer",
+          expires_in: 3600,
+          scope: "orchestration:read",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+  const layerPool = Layer.succeed(DesktopBackendPool.DesktopBackendPool, {
+    list: Effect.succeed([
+      {
+        id: PRIMARY_LOCAL_ENVIRONMENT_ID,
+        label: Effect.succeed("Windows"),
+        currentConfig: Effect.succeedSome(config),
+      },
+    ]),
+  } as unknown as DesktopBackendPool.DesktopBackendPool["Service"]);
+  // Answers the first `failures` exchanges with `failure`, then with a token.
+  const makeExchange = (failures: number, failure: () => Response) =>
     Effect.gen(function* () {
-      // The first two attempts return a 503 (the shape a settling backend
-      // produces); the third succeeds. Before the retry, a single transient
-      // failure hard-failed into DesktopLocalEnvironmentAuthSessionBootstrapError.
-      // A 503 flows through the real HttpApiClient pipeline and maps to
-      // RemoteEnvironmentAuthUndeclaredStatusError(url, 503), which the
-      // classifier treats as transient. TestClock advances the spaced schedule
-      // deterministically instead of waiting out real 500ms delays.
       const requestCount = yield* Ref.make(0);
-      const successResponse = (request: HttpClientRequest.HttpClientRequest) =>
-        HttpClientResponse.fromWeb(
-          request,
-          new Response(
-            JSON.stringify({
-              access_token: "desktop-bearer-token",
-              issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
-              token_type: "Bearer",
-              expires_in: 3600,
-              scope: "orchestration:read",
-            }),
-            { status: 200, headers: { "content-type": "application/json" } },
-          ),
-        );
-      const transientResponse = (request: HttpClientRequest.HttpClientRequest) =>
-        HttpClientResponse.fromWeb(request, new Response("", { status: 503 }));
       const layerHttpClient = Layer.succeed(
         HttpClient.HttpClient,
         HttpClient.make((request) =>
-          Ref.modify(requestCount, (n) => [n + 1, n + 1]).pipe(
-            Effect.flatMap((count) =>
-              count <= 2
-                ? Effect.succeed(transientResponse(request))
-                : Effect.succeed(successResponse(request)),
+          Ref.updateAndGet(requestCount, (count) => count + 1).pipe(
+            Effect.map((count) =>
+              count <= failures
+                ? HttpClientResponse.fromWeb(request, failure())
+                : tokenResponse(request),
             ),
           ),
         ),
       );
-      const poolLayer = Layer.succeed(DesktopBackendPool.DesktopBackendPool, {
-        list: Effect.succeed([
-          {
-            id: PRIMARY_LOCAL_ENVIRONMENT_ID,
-            label: Effect.succeed("Windows"),
-            currentConfig: Effect.succeedSome(config),
-          },
-        ]),
-      } as unknown as DesktopBackendPool.DesktopBackendPool["Service"]);
-      const testLayer = DesktopLocalEnvironmentAuth.layer.pipe(
-        Layer.provide(Layer.mergeAll(poolLayer, layerHttpClient)),
+      const auth = yield* DesktopLocalEnvironmentAuth.DesktopLocalEnvironmentAuth.pipe(
+        Effect.provide(
+          DesktopLocalEnvironmentAuth.layer.pipe(
+            Layer.provide(Layer.mergeAll(layerPool, layerHttpClient)),
+          ),
+        ),
+      );
+      return { auth, requestCount };
+    });
+
+  it.effect("retries a backend that is still starting", () =>
+    Effect.gen(function* () {
+      const { auth, requestCount } = yield* makeExchange(
+        2,
+        () => new Response("", { status: 503 }),
       );
 
-      const auth = yield* DesktopLocalEnvironmentAuth.DesktopLocalEnvironmentAuth.pipe(
-        Effect.provide(testLayer),
-      );
-      // Fork getBearerToken so the TestClock can advance the spaced schedule
-      // delays without blocking the test fiber.
       const fiber = yield* auth.getBearerToken.pipe(Effect.forkChild);
-      // Two transient attempts each park for 500ms on the spaced schedule;
-      // advance past both delays so the third attempt (success) can run.
-      yield* TestClock.adjust(Duration.millis(500));
-      yield* TestClock.adjust(Duration.millis(500));
-      const token = yield* Fiber.join(fiber);
-      assert.strictEqual(token, "desktop-bearer-token");
-      assert.isAtLeast(yield* Ref.get(requestCount), 3);
+      yield* TestClock.adjust(Duration.seconds(1));
+
+      assert.strictEqual(yield* Fiber.join(fiber), "desktop-bearer-token");
+      assert.strictEqual(yield* Ref.get(requestCount), 3);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("does not retry a rejected bootstrap credential", () =>
+    Effect.gen(function* () {
+      const { auth, requestCount } = yield* makeExchange(1, () =>
+        Response.json(
+          {
+            _tag: "EnvironmentAuthInvalidError",
+            code: "auth_invalid",
+            reason: "invalid_credential",
+            traceId: "trace-1",
+          },
+          { status: 401 },
+        ),
+      );
+
+      const fiber = yield* auth.getBearerToken.pipe(Effect.flip, Effect.forkChild);
+      yield* TestClock.adjust(Duration.seconds(1));
+      const error = yield* Fiber.join(fiber);
+
+      assert.strictEqual(error._tag, "DesktopLocalEnvironmentAuthSessionBootstrapError");
+      assert.strictEqual(yield* Ref.get(requestCount), 1);
     }).pipe(Effect.provide(TestClock.layer())),
   );
 });
