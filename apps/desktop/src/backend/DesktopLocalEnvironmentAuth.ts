@@ -1,5 +1,7 @@
 import { bootstrapRemoteBearerSession } from "@t3tools/client-runtime/authorization";
 import { PRIMARY_LOCAL_ENVIRONMENT_ID } from "@t3tools/contracts";
+import { currentDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -9,7 +11,7 @@ import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
-import * as HttpClient from "effect/unstable/http/HttpClient";
+import * as HttpClient from "effect/http/HttpClient";
 
 import * as DesktopBackendPool from "./DesktopBackendPool.ts";
 
@@ -124,7 +126,14 @@ export const make = Effect.gen(function* () {
           return yield* new DesktopLocalEnvironmentAuthBackendNotConfiguredError();
         }
         const config = configOption.value;
-        const credential = config.bootstrap.desktopBootstrapToken;
+        // A backend launched with the desktop secret accepts the current
+        // window's token, not the one frozen into its launch config; this
+        // exchange can run long after launch (e.g. after a suspend).
+        const secret = config.bootstrap.desktopBootstrapSecret;
+        const credential =
+          secret === undefined
+            ? config.bootstrap.desktopBootstrapToken
+            : currentDesktopBootstrapToken(secret, yield* Clock.currentTimeMillis);
         if (!credential) {
           return yield* new DesktopLocalEnvironmentAuthBackendNotConfiguredError();
         }

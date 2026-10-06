@@ -5,7 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as NodeTimersPromises from "node:timers/promises";
 import * as Path from "effect/Path";
-import * as Mime from "effect/unstable/http/Mime";
+import * as Mime from "effect/http/Mime";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -126,6 +126,9 @@ function registerDesktopSchemePrivilegesSync(): void {
         supportFetchAPI: true,
         corsEnabled: true,
         stream: true,
+        // Custom schemes skip Chromium's V8 code cache unless they opt in.
+        // Dev stays off: Vite serves changing code at stable URLs.
+        codeCache: true,
       },
     },
     {
